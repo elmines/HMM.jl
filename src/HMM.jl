@@ -29,15 +29,36 @@ function likelihood(m::Model, o::Vector{Int})::Float64
     T = size(o,1)
     em = m.emission
     joint_probs = m.initial .* transpose(em[:,o[1]])
-    println(joint_probs)
     for i in 2:T
         joint_probs = joint_probs * m.transition
         joint_probs = joint_probs .* transpose(em[:,o[i]])
-        println(joint_probs)
     end
     sum(joint_probs)
 end
 
-export Model, simulate, likelihood
+function decode(m::Model, o::Vector{Int})::Vector{Int}
+    T = size(o, 1)
+    N = size(m.transition, 1)
+    backpointers = Array{Int, 2}(undef, T, N)
+    trans = m.transition
+    em = m.emission
+    joint_probs = dropdims( m.initial .* transpose(em[:, o[1]]), dims=1)
+    for t = 2:T
+        (probs, inds) = findmax(joint_probs .* trans, dims=1)
+        probs = dropdims(probs, dims=1) .* em[:,o[t]]
+        backpointers[t, :] = transpose([i[1] for i in inds])
+        joint_probs = probs
+    end
+
+    decoded = Vector{Int}(undef, T)
+    decoded[T] = findmax(joint_probs)[2]
+    for t = T:-1:2
+        next = backpointers[t, decoded[t]]
+        decoded[t-1] = next
+    end
+    decoded
+end
+
+export Model, simulate, likelihood, decode
 
 end # module
