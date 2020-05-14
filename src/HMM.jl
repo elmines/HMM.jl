@@ -1,8 +1,10 @@
 module HMM
 
+using LinearAlgebra: norm
+
 RowVector{T} = Array{T, 2}
 
-struct Model
+mutable struct Model
 	transition::Matrix{Float64}
     emission::Matrix{Float64}
     initial::RowVector{Float64}
@@ -25,15 +27,32 @@ function simulate(m::Model, n::Int) :: RowVector{Float64}
 	accum * m.emission
 end
 
-function likelihood(m::Model, o::Vector{Int})::Float64
+function _forwardprobs(m::Model, o::Vector{Int})::Array{Float64, 2}
     T = size(o,1)
     em = m.emission
-    joint_probs = m.initial .* transpose(em[:,o[1]])
+    hiddensize = size(em, 1)
+    probs = Array{Float64, 2}(undef, T, hiddensize)
+    probs[1, :] = m.initial .* transpose(em[:,o[1]])
     for i in 2:T
-        joint_probs = joint_probs * m.transition
-        joint_probs = joint_probs .* transpose(em[:,o[i]])
+        probs[i, :] = transpose(probs[i-1, :]) * m.transition .* transpose(em[:,o[i]])
     end
-    sum(joint_probs)
+    probs
+end
+function _backwardprobs(m::Model, o::Vector{Int})::Vector{Float64}
+    T = size(o, 1)
+    emit = m.emission
+    trans = m.transition
+    probs = Array{Float64, 2}(undef, T, size(trans, 1))
+    probs[T, :] .= 1
+    for t = (T-1):-1:1
+        probs[t, :] = trans * probs[t+1,:] .* emit[:, o[t+1]]
+    end
+    probs
+end
+
+function likelihood(m::Model, o::Vector{Int})::Float64
+    probs = _forwardprobs(m, o)
+    sum(probs[end, :])
 end
 
 """
@@ -62,34 +81,61 @@ function decode(m::Model, o::Vector{Int})::Vector{Int}
     decoded
 end
 
-function learn(O::Vector{Int}, outsize::Int, hiddensize::Int)::Model
+
+"""
+
+Returns the "progress": (the L1 norm of the change in the model's parameters)
+"""
+function update(m::Model, o::Vector{Int})::Float64
+    (hiddensize, outsize) = size(m.emission)
+    trans = m.transition
+    emit = m.emission
+    T = size(o)
+
+    α = _forwardprobs(m, o)
+    β = _backwardprobs(m, o)
+    lklhd = sum(α[end, :])
+    γ = α .* β ./ lklhd
+
+    ξ = zeros(T-1, hiddensize, hiddensize)
+    for t = 1:T-1
+        ξ[t, :, :] = transpose(α[t, :]) .* trans .* β[t+1, :] .* emit[:, o[t+1]]
+    end
+    ξ ./= lklhd
+
+    sum_drop = (A, dims) -> dropdims(sum(A,dims=dims),dims=dims)
+    trans_new = sum_drop(ξ, 1) ./ sum_drop(ξ, (1,3))
+
+    emit_new = similar(m.emission)
+    mask = o .==  collect(1:hiddensize)'
+
+    emit_new = sum_drop(γ .* mask, 1) ./ 
+    #for j = 1:hiddensize
+    #    denom::Float64 = sum(γ[:,j])
+    #    for k = 1:outsize
+    #    end
+    #end
+
+    prog = norm(trans_new - m.transition, 1) + norm(emit_new - m.emission, 1)
+    prog
+end
+
+"""
+Train a model given a set of observations
+
+- O: A jagged array of observations (i.e. the observation sequences can have different durations)
+- outsize: Number of distinct possible observations
+- hiddensize: Number of Markov states
+"""
+function learn(O::Vector{Vector{Int}}, outsize::Int, hiddensize::Int)::Model
     # Initialize transition matrix to a uniform distribution
     trans::Array{Float64,2} = ones(hiddensize,hiddensize) / hiddensize
     emit::Array{Float64,2} = ones(hiddensize, outsize) / outsize
     T::Int = size(O)
 
-    prog = 1
-    while prog >= 0.1
-        ξ = zeros(hiddensize, hiddensize, T-1)
-        γ = zeros(hiddensize, T)
+  
 
-        trans_new = similar(trans)
-        for i = 1:hiddensize
-            for j = 1:hiddensize
-                trans_new[i,j] = sum(ξ[i,j]) / sum(ξ[i])
-            end
-        end
-
-        emit_new = similar(emit)
-        for k = 1:outsize
-            for j = 1:hiddensize
-
-            end
-        end
-
-
-        prog = 0.01
-    end
+    prog = 0.01
 
     init = ones(1, hiddenSize) / hiddensize #FIXME: Calcluate from α(1)
 end
