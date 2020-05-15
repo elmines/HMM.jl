@@ -27,31 +27,34 @@ function simulate(m::Model, n::Int) :: RowVector{Float64}
 	accum * m.emission
 end
 
-function _forwardprobs(m::Model, o::Vector{Int})::Array{Float64, 2}
+function forwardprobs(m::Model, o::Vector{Int})::Array{Float64, 2}
     T = size(o,1)
     em = m.emission
     hiddensize = size(em, 1)
     probs = Array{Float64, 2}(undef, T, hiddensize)
     probs[1, :] = m.initial .* transpose(em[:,o[1]])
     for i in 2:T
-        probs[i, :] = transpose(probs[i-1, :]) * m.transition .* transpose(em[:,o[i]])
-    end
-    probs
-end
-function _backwardprobs(m::Model, o::Vector{Int})::Vector{Float64}
-    T = size(o, 1)
-    emit = m.emission
-    trans = m.transition
-    probs = Array{Float64, 2}(undef, T, size(trans, 1))
-    probs[T, :] .= 1
-    for t = (T-1):-1:1
-        probs[t, :] = trans * probs[t+1,:] .* emit[:, o[t+1]]
+        probs[i, :] = probs[i-1, :]' * m.transition .* em[:,o[i]]'
     end
     probs
 end
 
+function backwardprobs(m::Model, o::Vector{Int})::Array{Float64, 2}
+    trans = m.transition
+    em = m.emission
+    T = size(o, 1)
+    N = size(trans, 1)
+    probs::Array{Float64, 2} = Array{Float64, 2}(undef, T, N)
+    probs[T, :] .= 1
+    for t ∈ (T-1):-1:1
+        probs[t, :] = trans * ( probs[t+1,:] .* em[:, o[t+1]] )
+    end
+    probs
+end
+
+
 function likelihood(m::Model, o::Vector{Int})::Float64
-    probs = _forwardprobs(m, o)
+    probs = forwardprobs(m, o)
     sum(probs[end, :])
 end
 
@@ -92,9 +95,9 @@ function update(m::Model, o::Vector{Int})::Float64
     emit = m.emission
     T = size(o)
 
-    α = _forwardprobs(m, o)
-    β = _backwardprobs(m, o)
-    lklhd = sum(α[end, :])
+    α = forwardprobs(m, o)
+    β = backwardprobs(m, o)
+    lklhd::Float64 = sum(α[end, :])
     γ = α .* β ./ lklhd
 
     ξ = zeros(T-1, hiddensize, hiddensize)
@@ -106,15 +109,8 @@ function update(m::Model, o::Vector{Int})::Float64
     sum_drop = (A, dims) -> dropdims(sum(A,dims=dims),dims=dims)
     trans_new = sum_drop(ξ, 1) ./ sum_drop(ξ, (1,3))
 
-    emit_new = similar(m.emission)
     mask = o .==  collect(1:hiddensize)'
-
-    emit_new = sum_drop(γ .* mask, 1) ./ 
-    #for j = 1:hiddensize
-    #    denom::Float64 = sum(γ[:,j])
-    #    for k = 1:outsize
-    #    end
-    #end
+    emit_new = sum_drop(γ .* mask, 1) ./ sum(γ, 1)
 
     prog = norm(trans_new - m.transition, 1) + norm(emit_new - m.emission, 1)
     prog
@@ -127,17 +123,23 @@ Train a model given a set of observations
 - outsize: Number of distinct possible observations
 - hiddensize: Number of Markov states
 """
-function learn(O::Vector{Vector{Int}}, outsize::Int, hiddensize::Int)::Model
+function learn(O::Vector{Vector{Int}}, outsize::Int, hiddensize::Int;
+               max_epochs=10)::Model
+
     # Initialize transition matrix to a uniform distribution
     trans::Array{Float64,2} = ones(hiddensize,hiddensize) / hiddensize
     emit::Array{Float64,2} = ones(hiddensize, outsize) / outsize
+    init::RowVector{Float64} = ones(1,hiddensize) / hiddensize
     T::Int = size(O)
 
-  
-
-    prog = 0.01
-
-    init = ones(1, hiddenSize) / hiddensize #FIXME: Calcluate from α(1)
+    m = Model(trans, emit, init)
+    for i ∈ 1:max_epochs
+        epoch_prog = 0.
+        for o in O
+            epoch_prog += update(m, o)
+        end
+    end
+    m
 end
 
 export Model, simulate, likelihood, decode
