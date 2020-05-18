@@ -1,6 +1,8 @@
 module HMM
 
 using LinearAlgebra: norm
+using Random: MersenneTwister
+using Distributions: Categorical
 
 RowVector{T} = Array{T, 2}
 
@@ -19,12 +21,32 @@ mutable struct Model
 	end
 end
 
-function simulate(m::Model, n::Int) :: RowVector{Float64}
-	accum = m.initial;
-	for i in 1:n
-		accum = accum * m.transition
+function simulate(m::Model, n::Int) :: Array{Float64, 2}
+    outsize = size(m.emission, 2)
+    probs = Array{Float64, 2}(undef, n, outsize)
+    
+    probs[1, :] = m.initial * m.emission
+    accum = m.initial
+	for i in 2:n
+        accum = accum * m.transition
+        probs[i, :] = accum * m.emission
 	end
-	accum * m.emission
+	probs
+end
+
+function sample(m::Model, T::Int; seed::Int = 0) :: Vector{Int}
+    o = Vector{Int}(undef, T)
+    dist = m.initial
+    rng = MersenneTwister(seed)
+
+    cat_dist = () -> Categorical(dropdims(dist * m.emission, dims=1))
+
+    o[1] = rand(rng, cat_dist() )
+    for t ∈ 2:T
+        dist *= m.transition
+        o[t] = rand(rng, cat_dist() )
+    end
+    o
 end
 
 function forwardprobs(m::Model, o::Vector{Int})::Array{Float64, 2}
@@ -98,19 +120,19 @@ function update(m::Model, o::Vector{Int})::Float64
     α = forwardprobs(m, o)
     β = backwardprobs(m, o)
     lklhd::Float64 = sum(α[end, :])
-    γ = α .* β ./ lklhd
+    γ::Array{Float64,2} = α .* β ./ lklhd
 
-    ξ = zeros(T-1, hiddensize, hiddensize)
+    ξ::Array{Float64,2} = zeros(T-1, hiddensize, hiddensize)
     for t = 1:T-1
-        ξ[t, :, :] = transpose(α[t, :]) .* trans .* β[t+1, :] .* emit[:, o[t+1]]
+        ξ[t, :, :] = α[t, :] .* trans .* β[t+1, :]' .* emit[:, o[t+1]]
     end
     ξ ./= lklhd
 
     sum_drop = (A, dims) -> dropdims(sum(A,dims=dims),dims=dims)
-    trans_new = sum_drop(ξ, 1) ./ sum_drop(ξ, (1,3))
+    trans_new::Array{Float64,2} = sum_drop(ξ, 1) ./ sum_drop(ξ, (1,3))
 
-    mask = o .==  collect(1:hiddensize)'
-    emit_new = sum_drop(γ .* mask, 1) ./ sum(γ, 1)
+    mask::Array{Float64,2} = o .==  collect(1:outsize)'
+    emit_new::Array{Float64,2} = (γ' * mask)::Array{Float64,2} ./ sum(γ, 1)::Array{Float64,2}
 
     prog = norm(trans_new - m.transition, 1) + norm(emit_new - m.emission, 1)
     prog
@@ -142,6 +164,6 @@ function learn(O::Vector{Vector{Int}}, outsize::Int, hiddensize::Int;
     m
 end
 
-export Model, simulate, likelihood, decode
+export Model, simulate, sample, likelihood, decode, update, learn
 
 end # module
