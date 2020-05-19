@@ -1,6 +1,7 @@
 using HMM
 using Test
 using LinearAlgebra: norm
+using Random: MersenneTwister
 
 
 @testset "Path Probabilities" begin
@@ -46,4 +47,27 @@ end
     theor_dists = simulate(m, T)
 
     @test norm(exp_dists .- theor_dists, 2) < .1
+end
+
+@testset "Learning" begin
+    rng = MersenneTwister(0)
+    m = Model([.9 .1; .1 .9], [.2 .4 .4; .5 .4 .1], [.8 .2])
+    randInt = (a,b) -> a + abs(rand(rng,Int)) % (b-a+1)
+
+    n = 20000
+    samples::Vector{Vector{Int}} = [sample(m, randInt(5,10); seed=i) for i ∈ 1:n]
+
+    # Trying to relearn the original true model
+    hiddensize = size(m.transition, 1)
+    outsize = size(m.emission, 2)
+    init = deepcopy(m.initial)
+
+    m̂ = learn(samples, outsize, hiddensize; max_epochs=15, init=init, verbose=true) 
+
+    println(m.transition)
+    println(m̂.transition)
+    println()
+    println(m.emission)
+    println(m̂.emission)
+
 end

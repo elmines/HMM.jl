@@ -3,6 +3,7 @@ module HMM
 using LinearAlgebra: norm
 using Random: MersenneTwister
 using Distributions: Categorical
+using Printf
 
 RowVector{T} = Array{T, 2}
 
@@ -111,31 +112,39 @@ end
 
 Returns the "progress": (the L1 norm of the change in the model's parameters)
 """
-function update(m::Model, o::Vector{Int})::Float64
+function update(m::Model, o::Vector{Int})::Tuple{Matrix{Float64},Matrix{Float64}}
     (hiddensize, outsize) = size(m.emission)
     trans = m.transition
     emit = m.emission
-    T = size(o)
+    T::Int = size(o,1)
+    sum_drop = (A, dims) -> dropdims(sum(A,dims=dims),dims=dims)
 
-    α = forwardprobs(m, o)
+    nonans = (A) -> !any(isnan.(A))
+
+    α = forwardprobs(m, o);
     β = backwardprobs(m, o)
+
+
     lklhd::Float64 = sum(α[end, :])
     γ::Array{Float64,2} = α .* β ./ lklhd
 
-    ξ::Array{Float64,2} = zeros(T-1, hiddensize, hiddensize)
+    ξ::Array{Float64,3} = zeros(T-1, hiddensize, hiddensize)
     for t = 1:T-1
-        ξ[t, :, :] = α[t, :] .* trans .* β[t+1, :]' .* emit[:, o[t+1]]
+        temp::Array{Float64, 2} = α[t, :] .* trans .* β[t+1, :]' .* emit[:, o[t+1]]
+        ξ[t, :, :] = temp
     end
     ξ ./= lklhd
 
-    sum_drop = (A, dims) -> dropdims(sum(A,dims=dims),dims=dims)
     trans_new::Array{Float64,2} = sum_drop(ξ, 1) ./ sum_drop(ξ, (1,3))
 
     mask::Array{Float64,2} = o .==  collect(1:outsize)'
-    emit_new::Array{Float64,2} = (γ' * mask)::Array{Float64,2} ./ sum(γ, 1)::Array{Float64,2}
 
-    prog = norm(trans_new - m.transition, 1) + norm(emit_new - m.emission, 1)
-    prog
+    numer::Array{Float64, 2} = (γ' * mask)::Array{Float64,2}
+    denom::Array{Float64, 1} = sum_drop(γ,1)::Array{Float64,1}
+
+    emit_new::Array{Float64,2} = numer ./ denom
+
+    (trans_new, emit_new)
 end
 
 """
@@ -146,20 +155,45 @@ Train a model given a set of observations
 - hiddensize: Number of Markov states
 """
 function learn(O::Vector{Vector{Int}}, outsize::Int, hiddensize::Int;
-               max_epochs=10)::Model
-
-    # Initialize transition matrix to a uniform distribution
+               init::RowVector{Float64}=missing, max_epochs::Int=10, verbose::Bool=false)::Model
     trans::Array{Float64,2} = ones(hiddensize,hiddensize) / hiddensize
     emit::Array{Float64,2} = ones(hiddensize, outsize) / outsize
-    init::RowVector{Float64} = ones(1,hiddensize) / hiddensize
-    T::Int = size(O)
+    nsamples = size(O, 1)
+    if ismissing(init)
+        init = ones(1,hiddensize) / hiddensize
+    elseif size(init) != (1, hiddensize)
+        throw(ArgumentError("init must be a hiddensize-vector"))
+    end
 
     m = Model(trans, emit, init)
+    hasnan = (A) -> any(isnan.(A))
+
     for i ∈ 1:max_epochs
-        epoch_prog = 0.
-        for o in O
-            epoch_prog += update(m, o)
+        new_trans = zero(m.transition)
+        new_emit = zero(m.emission)
+        good_incs = 0
+        for (j, o) in enumerate(O)
+            (trans_inc, emit_inc) = update(m, o)
+            if hasnan(trans_inc) || hasnan(emit_inc); continue; end
+            good_incs += 1
+            new_trans += trans_inc
+            new_emit += emit_inc
         end
+        if good_incs == 0;
+            if verbose
+                println("No more good samples; terminating training.")
+            end
+            break;
+        end
+        new_trans ./= good_incs
+        new_emit ./= good_incs
+
+        prog = norm(m.transition - new_trans, 2) + norm(m.emission - new_emit, 2)
+        if verbose
+            @printf("Epoch %d/%d: progress=%.3f\n", i, max_epochs, prog)
+        end
+        m.transition = new_trans
+        m.emission = new_emit
     end
     m
 end
